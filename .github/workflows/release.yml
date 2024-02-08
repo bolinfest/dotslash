@@ -19,7 +19,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  ubuntu-22.04.x86_64:
+  ubuntu-22_04-x86_64:
     needs: create-release
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: gh release upload "${GITHUB_REF#refs/tags/}" "dotslash-ubuntu-22.04.x86_64.${GITHUB_REF#refs/tags/}.tar.gz"
 
-  ubuntu-22.04.arm64:
+  ubuntu-22_04-arm64:
     needs: create-release
     runs-on: ubuntu-22.04
     timeout-minutes: 30
