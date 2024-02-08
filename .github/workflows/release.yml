@@ -43,9 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        - targets: aarch64-unknown-linux-gnu
+        with:
+          targets: aarch64-unknown-linux-gnu
       - run: apt install -y gcc-aarch64-linux-gnu
-      - run: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo build --target aarch64-unknown-linux-gnu --release
+      - run: cargo build --target aarch64-unknown-linux-gnu --release
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - run: tar -czvf "dotslash-ubuntu-22.04.arm64.${GITHUB_REF#refs/tags/}.tar.gz" -C target/aarch64-unknown-linux-gnu/release dotslash
       - name: upload release
         env:
