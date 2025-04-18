@@ -13,12 +13,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, Iterator, List
+from typing import Final
 
-EMPTY_STR_LIST: Final[List[str]] = []
+EMPTY_STR_LIST: Final[list[str]] = []
 
 try:
     from .fb.ci import set_ci_envs
@@ -28,14 +30,14 @@ except ImportError:
     pass
 
 
-def get_path_env(name: str) -> str:
+def get_path_env(name: str) -> Path:
     try:
         value = os.environ[name]
     except KeyError as err:
         raise unittest.SkipTest(f"required env var not set: `{name}`") from err
 
     try:
-        return str(Path(value).resolve(strict=True))
+        return Path(value).resolve(strict=True)
     except FileNotFoundError as err:
         raise unittest.SkipTest(f"required path does not exist: `{value}`") from err
 
@@ -105,14 +107,14 @@ def move_cwd(path: Path) -> Iterator[None]:
 PRINT_ARGS_ARG0 = r"^0:.+\\print_args\.windows\.(aarch64|x86_64)\.exe$"
 
 
-class DotSlashWindowsShimTest(unittest.TestCase):
+class DotslashWindowsShimTest(unittest.TestCase):
     def setUp(self) -> None:
         self.maxDiff = None
 
         dotslash_bin = get_path_env("DOTSLASH_BIN")
         dotslash_windows_shim = get_path_env("DOTSLASH_WINDOWS_SHIM")
 
-        self._tempdir = tempfile.TemporaryDirectory()  # noqa: P201
+        self._tempdir = tempfile.TemporaryDirectory()
         self._fixtures: Path = Path(self._tempdir.name)
 
         bin_dir = self._fixtures / "bin"
@@ -135,13 +137,18 @@ class DotSlashWindowsShimTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         os.environ["PATH"] = self._original_path
+        for _ in range(3):
+            try:
+                self._tempdir.cleanup()
+                return
+            except PermissionError:
+                time.sleep(1)
         self._tempdir.cleanup()
 
     def test_args_none(self) -> None:
         ret = subprocess.run(
             [str(self._fixtures / "print_args.exe")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -157,8 +164,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         ret = subprocess.run(
             [str(print_args_path)],
             input="this should not be seen on Windows",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -176,8 +182,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         )
         ret = subprocess.run(
             [str(self._fixtures / "print_args.dotslash.exe")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -195,8 +200,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         print_args_path = self._fixtures / "print_args"
         ret = subprocess.run(
             [print_args_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(
@@ -211,8 +215,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
     def test_args_none_with_unc_path(self) -> None:
         ret = subprocess.run(
             ["\\\\?\\" + str(self._fixtures / "print_args.exe")],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -244,8 +247,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
                     "cp print_args.exe print_args-{suffix}.exe && "
                     "./print_args-{suffix}.exe".format(suffix=SUFFIX),
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 encoding="utf8",
             )
             self.assertEqual(ret.stderr, "")
@@ -255,8 +257,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
     def test_args_empty(self) -> None:
         ret = subprocess.run(
             [str(self._fixtures / "print_args.exe"), ""],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "1:\n")
@@ -266,8 +267,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
     def test_args_simple(self) -> None:
         ret = subprocess.run(
             [str(self._fixtures / "print_args.exe"), "a", "b", "c"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "1:a\n2:b\n3:c\n")
@@ -285,8 +285,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         )
         ret = subprocess.run(
             [str(self._fixtures / "print🍎args.exe"), "a", "b", "c"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "1:a\n2:b\n3:c\n")
@@ -305,8 +304,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
             with self.subTest(args=args):
                 ret = subprocess.run(
                     [str(self._fixtures / "print args.exe"), *args],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     encoding="utf8",
                 )
                 self.assertEqual(ret.stderr, stderr)
@@ -317,8 +315,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         with move_cwd(self._fixtures):
             ret = subprocess.run(
                 ["./print_args.exe", "a", "b", "c"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 encoding="utf8",
             )
             self.assertEqual(ret.stderr, "1:a\n2:b\n3:c\n")
@@ -329,8 +326,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         with prepend_path(self._fixtures):
             ret = subprocess.run(
                 ["print_args.exe", "a", "b", "c"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 encoding="utf8",
             )
             self.assertEqual(ret.stderr, "1:a\n2:b\n3:c\n")
@@ -339,9 +335,13 @@ class DotSlashWindowsShimTest(unittest.TestCase):
 
     def test_args_quotes(self) -> None:
         ret = subprocess.run(
-            [str(self._fixtures / "print_args.exe"), '""', '"""', 'a="\\"\'b\'\\""'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            [
+                str(self._fixtures / "print_args.exe"),
+                '""',
+                '"""',
+                'a="\\"\'b\'\\""',
+            ],
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, '1:""\n2:"""\n3:a="\\"\'b\'\\""\n')
@@ -358,8 +358,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
                 "🍎",  # 4 byte UTF-8 character https://www.compart.com/en/unicode/U+1F34E
                 "👩‍❤️‍💋‍👨",  # 11 bytes https://emojipedia.org/kiss-woman-man/
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "1:a\n2:Ф\n3:ꎆ\n4:🍎\n5:👩‍❤️‍💋‍👨\n")
@@ -378,11 +377,10 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         long_arg = "x" * (MAX_COMMAND_LINE - 512)
         ret = subprocess.run(
             [str(self._fixtures / "print_args.exe"), long_arg],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
-        self.assertEqual(ret.stderr, "1:{}\n".format(long_arg))
+        self.assertEqual(ret.stderr, f"1:{long_arg}\n")
         self.assertRegex(ret.stdout, PRINT_ARGS_ARG0)
         self.assertEqual(ret.returncode, 0)
 
@@ -390,8 +388,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         ret = subprocess.run(
             [str(self._fixtures / "stdin_to_stdout.exe")],
             input="abc",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -402,8 +399,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
         ret = subprocess.run(
             [str(self._fixtures / "stdin_to_stderr.exe")],
             input="abc",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "abc")
@@ -413,8 +409,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
     def test_exit_code(self) -> None:
         ret = subprocess.run(
             [str(self._fixtures / "exit_code.exe"), "64"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
         )
         self.assertEqual(ret.stderr, "")
@@ -424,8 +419,7 @@ class DotSlashWindowsShimTest(unittest.TestCase):
     def test_missing_dotslash(self) -> None:
         ret = subprocess.run(
             [str(self._fixtures / "exit_code.exe"), "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             encoding="utf8",
             env=dict(os.environ, PATH="/"),
         )

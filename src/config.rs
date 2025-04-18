@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-use anyhow::format_err;
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde::Serialize;
@@ -25,13 +24,16 @@ use crate::fetch_method::ArtifactFormat;
 /// all of the DotSlash files in the repo.
 pub const REQUIRED_HEADER: &str = "#!/usr/bin/env dotslash";
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ConfigFile {
+    #[cfg_attr(not(test), expect(dead_code))]
     pub name: String,
     pub platforms: HashMap<String, ArtifactEntry>,
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ArtifactEntry<Format = ArtifactFormat> {
     pub size: u64,
     pub hash: HashAlgorithm,
@@ -40,8 +42,31 @@ pub struct ArtifactEntry<Format = ArtifactFormat> {
     pub format: Format,
     pub path: ArtifactPath,
     pub providers: Vec<Value>,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub arg0: Arg0,
     #[serde(default = "readonly_default_as_true", skip_serializing_if = "is_true")]
     pub readonly: bool,
+}
+
+fn is_default<T>(t: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    *t == Default::default()
+}
+
+/// Determines what arg0 (`argv[0]`) gets set to.
+/// Note: This has no effect on Windows, where the behavior is effectively
+/// always "UnderlyingExecutable".
+#[derive(Deserialize, Serialize, Copy, Clone, Default, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Arg0 {
+    /// arg0 is set to the DotSlash file path as passed to `dotslash`.
+    #[default]
+    DotslashFile,
+    /// arg0 is left unset, which defaults to the underlying executable
+    /// in the cache directory.
+    UnderlyingExecutable,
 }
 
 /// While having a boolean that defaults to `true` is somewhat undesirable,
@@ -51,11 +76,13 @@ fn readonly_default_as_true() -> bool {
     true
 }
 
+#[expect(clippy::trivially_copy_pass_by_ref)]
 fn is_true(b: &bool) -> bool {
     *b
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Copy, Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum HashAlgorithm {
     #[serde(rename = "blake3")]
     Blake3,
@@ -71,7 +98,9 @@ pub fn parse_file(data: &str) -> anyhow::Result<(Value, ConfigFile)> {
             rest.strip_prefix("\r\n")
                 .or_else(|| rest.strip_prefix('\n'))
         })
-        .with_context(|| format_err!("DotSlash file must start with `{REQUIRED_HEADER}`"))?;
+        .with_context(|| {
+            anyhow::format_err!("DotSlash file must start with `{REQUIRED_HEADER}`")
+        })?;
 
     let value = serde_jsonrc::from_str::<Value>(data)?;
     let config_file = ConfigFile::deserialize(&value)?;
@@ -80,11 +109,7 @@ pub fn parse_file(data: &str) -> anyhow::Result<(Value, ConfigFile)> {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
-    use crate::config::ArtifactPath;
-    use crate::fetch_method::ArtifactFormat;
 
     fn parse_file_string(json: &str) -> anyhow::Result<ConfigFile> {
         Ok(parse_file(json)?.1)
@@ -128,11 +153,12 @@ mod tests {
                         )
                         .unwrap(),
                         format: ArtifactFormat::Tar,
-                        path: ArtifactPath::from_str("bindir/my_tool").unwrap(),
+                        path: "bindir/my_tool".parse().unwrap(),
                         providers: vec![serde_jsonrc::json!({
                             "type": "http",
                             "url": "https://example.com/my_tool.tar",
                         })],
+                        arg0: Arg0::DotslashFile,
                         readonly: true,
                     }
                 )]
@@ -178,11 +204,12 @@ mod tests {
                         )
                         .unwrap(),
                         format: ArtifactFormat::Plain,
-                        path: ArtifactPath::from_str("minesweeper.exe").unwrap(),
+                        path: "minesweeper.exe".parse().unwrap(),
                         providers: vec![serde_jsonrc::json!({
                             "type": "http",
                             "url": "https://foo.com",
                         })],
+                        arg0: Arg0::DotslashFile,
                         readonly: true,
                     }
                 )]

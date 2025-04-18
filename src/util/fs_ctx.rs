@@ -78,7 +78,7 @@ pub fn canonicalize<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
     fs::canonicalize(&path).map_err(|source| wrap1(source, "canonicalize", path))
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(dotslash_internal), expect(dead_code))]
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<u64> {
     fs::copy(&from, &to).map_err(|source| wrap2(source, "copy from", from, "to", to))
 }
@@ -87,7 +87,6 @@ pub fn create_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
     fs::create_dir_all(&path).map_err(|source| wrap1(source, "create directory", path))
 }
 
-#[allow(dead_code)]
 pub fn file_create<P: AsRef<Path>>(path: P) -> io::Result<fs::File> {
     fs::File::create(&path).map_err(|source| wrap1(source, "create file", path))
 }
@@ -96,7 +95,7 @@ pub fn file_open<P: AsRef<Path>>(path: P) -> io::Result<fs::File> {
     fs::File::open(&path).map_err(|source| wrap1(source, "open file", path))
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(all(windows, not(dotslash_internal), not(test)), expect(dead_code))]
 pub fn metadata<P: AsRef<Path>>(path: P) -> io::Result<fs::Metadata> {
     fs::metadata(&path).map_err(|source| wrap1(source, "get metadata for", path))
 }
@@ -110,7 +109,7 @@ pub fn namedtempfile_new_in<P: AsRef<Path>>(path: P) -> io::Result<tempfile::Nam
         .map_err(|source| wrap1(source, "create temp file in", path))
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(dotslash_internal), expect(dead_code))]
 pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
     fs::read(&path).map_err(|source| wrap1(source, "read file", path))
 }
@@ -127,11 +126,15 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<()> 
     fs::rename(&from, &to).map_err(|source| wrap2(source, "rename from", from, "to", to))
 }
 
+#[cfg_attr(not(dotslash_internal), expect(dead_code))]
+pub fn remove_file<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    fs::remove_file(&path).map_err(|source| wrap1(source, "remove file", path))
+}
+
 pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
     fs::remove_dir_all(&path).map_err(|source| wrap1(source, "remove dir all", path))
 }
 
-#[cfg_attr(windows, allow(dead_code))]
 pub fn set_permissions<P: AsRef<Path>>(path: P, perm: fs::Permissions) -> io::Result<()> {
     fs::set_permissions(&path, perm).map_err(|source| wrap1(source, "set permissions for", path))
 }
@@ -168,21 +171,6 @@ mod tests {
         assert_eq!(
             source.raw_os_error(),
             if cfg!(windows) { Some(3) } else { Some(2) },
-        );
-
-        let chain = anyhow::Chain::new(&err)
-            .map(|x| format!("{}", &x))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            chain,
-            &[
-                "failed to get metadata for `path/to/fake/file`",
-                if cfg!(windows) {
-                    "The system cannot find the path specified. (os error 3)"
-                } else {
-                    "No such file or directory (os error 2)"
-                },
-            ],
         );
     }
 

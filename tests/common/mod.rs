@@ -7,20 +7,37 @@
  * of this source tree.
  */
 
-use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
+use snapbox::Assert;
+use snapbox::RedactedValue;
+use snapbox::Redactions;
 use snapbox::cmd::Command;
-use snapbox::Substitutions;
+use tempfile::TempDir;
 
 #[cfg_attr(fbcode_build, path = "fb/ci.rs")]
 pub mod ci;
 
 #[path = "../../src/platform.rs"]
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod platform;
+
+macro_rules! if_win_else {
+    ($windows:expr, $not_windows:expr $(,)?) => {
+        if cfg!(windows) {
+            $windows
+        } else {
+            $not_windows
+        }
+    };
+}
+
+pub(crate) use if_win_else;
 
 const PACK_TGZ_HTTP_ARCHIVE_CACHE_DIR: &str = "cf/df86e55cbbd2455fd1e36468c2b1ff7f8998d4";
 
@@ -81,20 +98,71 @@ const PACK_PLAIN_HTTP_ARCHIVE_CACHE_DIR: &str = platform::if_platform! {
     windows_x86_64 = "19/0d26175e50e486f87d90ca9d10ac50e3c248fd",
 };
 
-const IO_ERROR_NOT_FOUND: &str = if cfg!(windows) {
-    "The system cannot find the path specified. (os error 3)"
-} else {
-    "No such file or directory (os error 2)"
-};
+const IO_ERROR_NOT_FOUND: &str = if_win_else!(
+    "The system cannot find the path specified. (os error 3)",
+    "No such file or directory (os error 2)",
+);
 
-pub struct DotSlashTestEnv {
-    current_dir: PathBuf,
-    substitutions: Substitutions,
-    tempdir_path: PathBuf,
-    _tempdir: tempfile::TempDir,
+#[derive(Debug)]
+struct SuperRedactions {
+    redactions: Redactions,
+    literal: HashMap<&'static str, String>,
 }
 
-impl DotSlashTestEnv {
+impl SuperRedactions {
+    fn new() -> Self {
+        Self {
+            redactions: Redactions::new(),
+            literal: HashMap::new(),
+        }
+    }
+
+    fn redaction(
+        &mut self,
+        key: &'static str,
+        value: impl Into<RedactedValue>,
+    ) -> snapbox::assert::Result<&mut Self> {
+        self.redactions.insert(key, value)?;
+        Ok(self)
+    }
+
+    /// Normalizes path separators to the platform native separator,
+    /// and expands nested path redactions.
+    fn path_redaction(
+        &mut self,
+        key: &'static str,
+        value: impl AsRef<Path>,
+    ) -> snapbox::assert::Result<&mut Self> {
+        let value = value
+            .as_ref()
+            .components()
+            .map(|comp| {
+                (|| {
+                    let k = comp.as_os_str().to_str()?;
+                    let v = self.literal.get(k)?.as_ref();
+                    Some(v)
+                })()
+                .unwrap_or(comp.as_os_str())
+            })
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .into_owned();
+
+        self.redactions.insert(key, value.clone())?;
+        self.literal.insert(key, value);
+
+        Ok(self)
+    }
+}
+
+pub struct DotslashTestEnv {
+    current_dir: PathBuf,
+    redactions: SuperRedactions,
+    tempdir_path: PathBuf,
+    _tempdir: TempDir,
+}
+
+impl DotslashTestEnv {
     pub fn try_new() -> anyhow::Result<Self> {
         let tempdir = tempfile::Builder::new()
             .prefix("dotslash_tests-")
@@ -119,60 +187,65 @@ impl DotSlashTestEnv {
             .context("current_dir is not UTF-8")?
             .to_owned();
 
-        let mut substitutions = snapbox::Substitutions::new();
-        substitutions.insert("[DOTSLASHCACHEDIR]", tempdir_str)?;
-        substitutions.insert("[CURRENTDIR]", current_dir_str)?;
-        substitutions.insert(
-            "[PACKTGZHTTPARCHIVECACHEDIR]",
+        let mut redactions = SuperRedactions::new();
+        redactions.path_redaction("[DOTSLASH_CACHE_DIR]", tempdir_str)?;
+        redactions.path_redaction("[CURRENT_DIR]", current_dir_str)?;
+        redactions.path_redaction(
+            "[PACK_TGZ_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_TGZ_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKTARXZHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_TAR_XZ_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_TAR_XZ_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKTARZSTHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_TAR_ZST_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_TAR_ZST_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKZIPTHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_ZIP_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_ZIP_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKGZHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_GZ_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_GZ_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKXZHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_XZ_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_XZ_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKZSTHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_ZST_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_ZST_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert(
-            "[PACKPLAINHTTPARCHIVECACHEDIR]",
+        redactions.path_redaction(
+            "[PACK_PLAIN_HTTP_ARCHIVE_CACHE_DIR]",
             PACK_PLAIN_HTTP_ARCHIVE_CACHE_DIR,
         )?;
-        substitutions.insert("[PRINTARGVEXECUTABLE]", PRINT_ARGV_EXECUTABLE)?;
-        substitutions.insert("[IOERRORNOTFOUND]", IO_ERROR_NOT_FOUND)?;
-        substitutions.insert("[DOTSLASHUSERAGENT]", USER_AGENT)?;
+        redactions.path_redaction("[PRINT_ARGV_EXECUTABLE]", PRINT_ARGV_EXECUTABLE)?;
+        redactions.redaction("[IO_ERROR_NOT_FOUND]", IO_ERROR_NOT_FOUND)?;
+        redactions.redaction("[DOTSLASH_USER_AGENT]", USER_AGENT)?;
 
-        Ok(DotSlashTestEnv {
+        Ok(DotslashTestEnv {
             current_dir,
-            substitutions,
+            redactions,
             tempdir_path,
             _tempdir: tempdir,
         })
     }
 
-    pub fn substitution(
-        &mut self,
-        key: &'static str,
-        value: impl Into<Cow<'static, str>>,
-    ) -> Result<&mut Self, snapbox::Error> {
-        self.substitutions.insert(key, value)?;
-        Ok(self)
+    pub fn redaction(&mut self, key: &'static str, value: impl Into<RedactedValue>) -> &mut Self {
+        self.redactions.redaction(key, value).unwrap();
+        self
+    }
+
+    pub fn path_redaction(&mut self, key: &'static str, value: impl AsRef<Path>) -> &mut Self {
+        self.redactions.path_redaction(key, value.as_ref()).unwrap();
+        self
+    }
+
+    pub fn current_dir(&self) -> &Path {
+        &self.current_dir
     }
 
     pub fn dotslash_cache(&self) -> &Path {
@@ -180,11 +253,43 @@ impl DotSlashTestEnv {
     }
 
     pub fn dotslash_command(&self) -> Command {
-        let assert = snapbox::Assert::new().substitutions(self.substitutions.clone());
+        let assert = Assert::new()
+            .normalize_paths(false)
+            .redact_with(self.redactions.redactions.clone());
         Command::new(ci::dotslash_bin())
             .current_dir(&self.current_dir)
             .env("DOTSLASH_CACHE", &self.tempdir_path)
             .envs(ci::envs())
             .with_assert(assert)
     }
+}
+
+impl Drop for DotslashTestEnv {
+    fn drop(&mut self) {
+        // Make it possible to delete the temp cache.
+        let _ = make_tree_entries_writable(&self.tempdir_path);
+    }
+}
+
+fn make_tree_entries_writable(folder: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(folder)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+
+        if metadata.is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            make_tree_entries_writable(&path)?;
+        }
+
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            #[expect(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            fs::set_permissions(path, perms)?;
+        }
+    }
+
+    Ok(())
 }

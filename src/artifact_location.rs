@@ -12,11 +12,12 @@ use std::fmt::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::artifact_path::ArtifactPath;
+use crate::config::Arg0;
 use crate::config::ArtifactEntry;
 use crate::config::HashAlgorithm;
 use crate::dotslash_cache::DotslashCache;
-use crate::fetch_method::ArchiveFormat;
-use crate::fetch_method::DecompressStep;
+use crate::fetch_method::ArtifactFormat;
 
 /// We limit the number of bytes of the BLAKE3 hash to try to keep the path
 /// lengths in $DOTSLASH_CACHE down so that we don't exceed $PATH_MAX.
@@ -34,6 +35,9 @@ pub struct ArtifactLocation {
     /// The path to use for advisory locking while downloading the specified
     /// artifact.
     pub lock_path: PathBuf,
+    /// Determines what arg0 (`argv[0]`) gets set to.
+    #[cfg_attr(windows, expect(dead_code))]
+    pub arg0: Arg0,
 }
 
 /// In terms of the computing the path within the artifact_directory, it is a
@@ -51,16 +55,27 @@ pub fn determine_location(
     artifact_entry: &ArtifactEntry,
     dotslash_cache: &DotslashCache,
 ) -> ArtifactLocation {
+    let ArtifactEntry {
+        size,
+        hash,
+        digest,
+        format,
+        path,
+        providers: _,
+        arg0,
+        readonly,
+    } = artifact_entry;
+
     let artifact_hash = blake3::Hasher::new()
-        .update(artifact_entry.size.to_string().as_bytes())
+        .update(size.to_string().as_bytes())
         .update(b"\0")
-        .update(create_key_for_hash_algorithm(&artifact_entry.hash))
+        .update(create_key_for_hash_algorithm(*hash))
         .update(b"\0")
-        .update(artifact_entry.digest.as_str().as_bytes())
+        .update(digest.as_str().as_bytes())
         .update(b"\0")
-        .update(create_key_for_format(artifact_entry).as_bytes())
+        .update(create_key_for_format(*format, path).as_bytes())
         .update(b"\0")
-        .update(if artifact_entry.readonly { b"1" } else { b"0" })
+        .update(if *readonly { b"1" } else { b"0" })
         .finalize();
     let artifact_key = artifact_hash.as_bytes()[..NUM_HASH_BYTES_FOR_PATH]
         .iter()
@@ -78,65 +93,49 @@ pub fn determine_location(
         .join(key_prefix)
         .join(key_rest);
 
-    let mut executable = artifact_directory.to_owned();
-    executable.extend(Path::new(artifact_entry.path.as_str()));
+    let mut executable = artifact_directory.clone();
+    executable.extend(Path::new(path.as_str()));
     let lock_path = dotslash_cache.locks_dir(key_prefix).join(key_rest);
 
     ArtifactLocation {
         artifact_directory,
         executable,
         lock_path,
+        arg0: *arg0,
     }
 }
 
-fn create_key_for_hash_algorithm(hash: &HashAlgorithm) -> &'static [u8] {
+fn create_key_for_hash_algorithm(hash: HashAlgorithm) -> &'static [u8] {
     match hash {
         HashAlgorithm::Blake3 => b"blake3",
         HashAlgorithm::Sha256 => b"sha256",
     }
 }
 
-fn create_key_for_format(entry: &ArtifactEntry) -> Cow<'_, str> {
-    match entry.format.extraction_policy() {
-        (decompress, Some(ArchiveFormat::Tar)) => {
-            // For an artifact that is an archive, the type of archive is
-            // sufficient to distinguish it.
-            match decompress {
-                None => Cow::Borrowed("tar"),
-                Some(DecompressStep::Gzip) => Cow::Borrowed("tar.gz"),
-                Some(DecompressStep::Xz) => Cow::Borrowed("tar.xz"),
-                Some(DecompressStep::Zstd) => Cow::Borrowed("tar.zst"),
-            }
-        }
-        (decompress, Some(ArchiveFormat::Zip)) => {
-            if let Some(d) = decompress {
-                unreachable!("zip's extraction_policy should never return `(Some(_), _)`; {d:?}");
-            }
-            Cow::Borrowed("zip")
-        }
-        (decompress, None) => {
-            // For a non-archive artifact, the `path` must be part of the cache
-            // key. The key has a prefix to distinguish it from the cache keys
-            // for archive artifacts.
-            let path = &entry.path;
-            match decompress {
-                None => Cow::Owned(format!("file:{}", path)),
-                Some(DecompressStep::Gzip) => Cow::Owned(format!("file.gz:{}", path)),
-                Some(DecompressStep::Xz) => Cow::Owned(format!("file.xz:{}", path)),
-                Some(DecompressStep::Zstd) => Cow::Owned(format!("file.zst:{}", path)),
-            }
-        }
+fn create_key_for_format(format: ArtifactFormat, path: &ArtifactPath) -> Cow<'static, str> {
+    match format {
+        // For a non-container artifact, the `path` must be part of the cache
+        // key. The key has a prefix to distinguish it from the cache keys
+        // for archive artifacts.
+        ArtifactFormat::Plain => Cow::Owned(format!("file:{}", path)),
+        ArtifactFormat::Gz => Cow::Owned(format!("file.gz:{}", path)),
+        ArtifactFormat::Xz => Cow::Owned(format!("file.xz:{}", path)),
+        ArtifactFormat::Zstd => Cow::Owned(format!("file.zst:{}", path)),
+
+        // For a container artifact, the type of archive is sufficient
+        // to distinguish it.
+        ArtifactFormat::Tar => Cow::Borrowed("tar"),
+        ArtifactFormat::TarGz => Cow::Borrowed("tar.gz"),
+        ArtifactFormat::TarXz => Cow::Borrowed("tar.xz"),
+        ArtifactFormat::TarZstd => Cow::Borrowed("tar.zst"),
+        ArtifactFormat::Zip => Cow::Borrowed("zip"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
-    use crate::artifact_path::ArtifactPath;
     use crate::digest::Digest;
-    use crate::fetch_method::ArtifactFormat;
 
     #[test]
     fn paths_for_extract_case() {
@@ -148,8 +147,9 @@ mod tests {
             )
             .unwrap(),
             format: ArtifactFormat::TarGz,
-            path: ArtifactPath::from_str("bin/sapling").unwrap(),
+            path: "bin/sapling".parse().unwrap(),
             providers: vec![],
+            arg0: Arg0::DotslashFile,
             readonly: true,
         };
         let dotslash_cache = DotslashCache::default();
@@ -188,8 +188,9 @@ mod tests {
             )
             .unwrap(),
             format: ArtifactFormat::Plain,
-            path: ArtifactPath::from_str("minesweeper.exe").unwrap(),
+            path: "minesweeper.exe".parse().unwrap(),
             providers: vec![],
+            arg0: Arg0::DotslashFile,
             readonly: true,
         };
         let dotslash_cache = DotslashCache::default();

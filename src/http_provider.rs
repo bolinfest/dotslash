@@ -7,7 +7,6 @@
  * of this source tree.
  */
 
-use std::ffi::OsString;
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -18,9 +17,14 @@ use crate::config::ArtifactEntry;
 use crate::curl::CurlCommand;
 use crate::curl::FetchContext;
 use crate::provider::Provider;
-use crate::util::file_lock::FileLock;
+use crate::util::FileLock;
 
 pub struct HttpProvider {}
+
+#[derive(Deserialize, Debug)]
+struct HttpProviderConfig {
+    url: String,
+}
 
 impl Provider for HttpProvider {
     fn fetch_artifact(
@@ -30,10 +34,8 @@ impl Provider for HttpProvider {
         _fetch_lock: &FileLock,
         artifact_entry: &ArtifactEntry,
     ) -> anyhow::Result<()> {
-        let config = HttpProviderConfig::deserialize(provider_config)?;
-        let url = config.url;
-        let url_os_str = OsString::from(url.clone());
-        let curl_cmd = CurlCommand::new(&url_os_str);
+        let HttpProviderConfig { url } = <_>::deserialize(provider_config)?;
+        let curl_cmd = CurlCommand::new(url.as_ref());
         // Currently, we always disable the progress bar, but we plan to add a
         // configuration option to enable it.
         let show_progress = false;
@@ -47,9 +49,4 @@ impl Provider for HttpProvider {
             .with_context(|| format!("failed to fetch `{}`", url))?;
         Ok(())
     }
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-struct HttpProviderConfig {
-    url: String,
 }

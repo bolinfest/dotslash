@@ -7,20 +7,22 @@
  * of this source tree.
  */
 
-use std::fmt::Write;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
 use serde::Deserialize;
 use serde_jsonrc::value::Value;
 
 use crate::config::ArtifactEntry;
 use crate::provider::Provider;
-use crate::util::file_lock::FileLock;
+use crate::util::CommandDisplay;
+use crate::util::CommandStderrDisplay;
+use crate::util::FileLock;
 
 pub struct GitHubReleaseProvider {}
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
 struct GitHubReleaseProviderConfig {
     tag: String,
     repo: String,
@@ -35,9 +37,9 @@ impl Provider for GitHubReleaseProvider {
         _fetch_lock: &FileLock,
         _artifact_entry: &ArtifactEntry,
     ) -> anyhow::Result<()> {
-        let GitHubReleaseProviderConfig { tag, repo, name } =
-            GitHubReleaseProviderConfig::deserialize(provider_config)?;
-        let _output = Command::new("gh")
+        let GitHubReleaseProviderConfig { tag, repo, name } = <_>::deserialize(provider_config)?;
+        let mut command = Command::new("gh");
+        command
             .arg("release")
             .arg("download")
             .arg(tag)
@@ -49,8 +51,22 @@ impl Provider for GitHubReleaseProvider {
             // regex. Adding ^ and $ as anchors only seems to break things.
             .arg(regex_escape(&name))
             .arg("--output")
-            .arg(destination)
-            .output()?;
+            .arg(destination);
+
+        let output = command
+            .output()
+            .with_context(|| format!("{}", CommandDisplay::new(&command)))
+            .context("failed to run the GitHub CLI")?;
+
+        if !output.status.success() {
+            return Err(anyhow::format_err!(
+                "{}",
+                CommandStderrDisplay::new(&output)
+            ))
+            .with_context(|| format!("{}", CommandDisplay::new(&command)))
+            .context("the GitHub CLI failed");
+        }
+
         Ok(())
     }
 }
@@ -62,15 +78,14 @@ fn regex_escape(s: &str) -> String {
         // Releases filenames likely have at least one `.` in there that needs
         // to be escaped, so add some padding, by default.
         String::with_capacity(s.len() + 4),
-        |mut output, c| match c {
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' => {
-                let _ = write!(output, "\\{c}");
-                output
-            }
-            _ => {
-                let _ = write!(output, "{c}");
-                output
-            }
+        |mut output, c| {
+            if let '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^'
+            | '$' = c
+            {
+                output.push('\\');
+            };
+            output.push(c);
+            output
         },
     )
 }

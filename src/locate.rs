@@ -7,20 +7,18 @@
  * of this source tree.
  */
 
-use std::path::Path;
-
-use anyhow::format_err;
 use anyhow::Context as _;
 
-use crate::artifact_location::determine_location;
 use crate::artifact_location::ArtifactLocation;
+use crate::artifact_location::determine_location;
 use crate::config;
 use crate::config::ArtifactEntry;
 use crate::dotslash_cache::DotslashCache;
 use crate::platform::SUPPORTED_PLATFORM;
-use crate::util::display::ListOf;
+use crate::util;
+use crate::util::ListOf;
 
-pub(crate) fn locate_artifact(
+pub fn locate_artifact(
     dotslash_data: &str,
     dotslash_cache: &DotslashCache,
 ) -> anyhow::Result<(ArtifactEntry, ArtifactLocation)> {
@@ -31,7 +29,7 @@ pub(crate) fn locate_artifact(
         .platforms
         .remove_entry(SUPPORTED_PLATFORM)
         .ok_or_else(|| {
-            format_err!(
+            anyhow::format_err!(
                 "expected platform `{}` - but found {}",
                 SUPPORTED_PLATFORM,
                 ListOf::new(config_file.platforms.keys()),
@@ -48,20 +46,9 @@ pub(crate) fn locate_artifact(
     // delay after modifying the file.
     //
     // Not on Windows because of "file used by another process" errors.
-    #[cfg(target_os = "linux")]
-    update_artifact_mtime(&artifact_location.executable);
+    if cfg!(target_os = "linux") {
+        let _ = util::update_mtime(&artifact_location.executable);
+    }
 
     Ok((artifact_entry, artifact_location))
-}
-
-/// DotSlash can unpack old artifacts which can be reaped by tools like
-/// tmpwatch or tmpreaper. Those tools work better using the mtime rather than
-/// atime which is why we update the mtime. But this doesn't work on
-/// Windows sometimes.
-#[cfg_attr(windows, allow(dead_code))]
-pub(crate) fn update_artifact_mtime(executable: &Path) {
-    drop(filetime::set_file_mtime(
-        executable,
-        filetime::FileTime::now(),
-    ));
 }

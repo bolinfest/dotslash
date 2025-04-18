@@ -10,7 +10,10 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Default, Deserialize, Serialize, Debug, PartialEq, Eq)]
+use crate::util::unarchive::ArchiveType;
+
+#[derive(Deserialize, Serialize, Copy, Clone, Default, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub enum ArtifactFormat {
     /// Artifact is a single file with no compression applied.
     #[default]
@@ -42,30 +45,27 @@ pub enum ArtifactFormat {
     Zip,
 }
 
-#[derive(Debug)]
-pub enum DecompressStep {
-    Gzip,
-    Xz,
-    Zstd,
-}
-
-pub enum ArchiveFormat {
-    Tar,
-    Zip,
-}
-
 impl ArtifactFormat {
-    pub fn extraction_policy(&self) -> (Option<DecompressStep>, Option<ArchiveFormat>) {
+    #[must_use]
+    pub fn as_archive_type(self) -> Option<ArchiveType> {
         match self {
-            Self::Plain => (None, None),
-            Self::Gz => (Some(DecompressStep::Gzip), None),
-            Self::Tar => (None, Some(ArchiveFormat::Tar)),
-            Self::TarGz => (Some(DecompressStep::Gzip), Some(ArchiveFormat::Tar)),
-            Self::TarXz => (Some(DecompressStep::Xz), Some(ArchiveFormat::Tar)),
-            Self::TarZstd => (Some(DecompressStep::Zstd), Some(ArchiveFormat::Tar)),
-            Self::Xz => (Some(DecompressStep::Xz), None),
-            Self::Zstd => (Some(DecompressStep::Zstd), None),
-            Self::Zip => (None, Some(ArchiveFormat::Zip)),
+            Self::Plain => None,
+            Self::Gz => Some(ArchiveType::Gz),
+            Self::Xz => Some(ArchiveType::Xz),
+            Self::Zstd => Some(ArchiveType::Zstd),
+            Self::Tar => Some(ArchiveType::Tar),
+            Self::TarGz => Some(ArchiveType::TarGz),
+            Self::TarXz => Some(ArchiveType::TarXz),
+            Self::TarZstd => Some(ArchiveType::TarZstd),
+            Self::Zip => Some(ArchiveType::Zip),
+        }
+    }
+
+    #[must_use]
+    pub fn is_container(self) -> bool {
+        match self {
+            Self::Plain | Self::Gz | Self::Xz | Self::Zstd => false,
+            Self::Tar | Self::TarGz | Self::TarXz | Self::TarZstd | Self::Zip => true,
         }
     }
 }

@@ -10,23 +10,23 @@
 use std::env::ArgsOs;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::BufReader;
+use std::io;
 use std::str::FromStr;
 
-use anyhow::format_err;
 use anyhow::Context as _;
-use sha2::Digest as _;
+use digest::Digest as _;
 use sha2::Sha256;
 use thiserror::Error;
 
-use crate::config::parse_file;
 use crate::config::REQUIRED_HEADER;
+use crate::config::parse_file;
 use crate::default_provider_factory::DefaultProviderFactory;
 use crate::dotslash_cache::DotslashCache;
 use crate::download::download_artifact;
 use crate::locate::locate_artifact;
 use crate::platform::SUPPORTED_PLATFORM;
 use crate::print_entry_for_url::print_entry_for_url;
+use crate::util;
 use crate::util::fs_ctx;
 
 #[derive(Debug)]
@@ -117,40 +117,46 @@ See `dotslash --help` for more information."
 }
 
 pub fn run_subcommand(subcommand: Subcommand, args: &mut ArgsOs) -> Result<(), SubcommandError> {
-    _run_subcommand(&subcommand, args).map_err(|x| SubcommandError::Other(subcommand, x))
+    run_subcommand_impl(&subcommand, args).map_err(|x| SubcommandError::Other(subcommand, x))
 }
 
-fn _run_subcommand(subcommand: &Subcommand, args: &mut ArgsOs) -> anyhow::Result<()> {
+fn run_subcommand_impl(subcommand: &Subcommand, args: &mut ArgsOs) -> anyhow::Result<()> {
     match subcommand {
         Subcommand::B3Sum => {
             let file_arg = take_exactly_one_arg(args)?;
             // TODO: read from stdin if file_arg is `-`
-            let file = fs_ctx::file_open(file_arg)?;
-            let mut reader = BufReader::new(file);
+            let mut file = fs_ctx::file_open(file_arg)?;
             let mut hasher = blake3::Hasher::new();
-            let hex_digest = std::io::copy(&mut reader, &mut hasher)
-                .map(|_size_in_bytes| format!("{:x}", hasher.finalize()))?;
+            io::copy(&mut file, &mut hasher)?;
+            let hex_digest = format!("{:x}", hasher.finalize());
             println!("{}", hex_digest);
         }
 
         Subcommand::Clean => {
             if args.next().is_some() {
-                return Err(format_err!("expected no arguments but received some"));
+                return Err(anyhow::format_err!(
+                    "expected no arguments but received some",
+                ));
             }
 
             let dotslash_cache = DotslashCache::new();
             eprintln!("Cleaning `{}`", dotslash_cache.cache_dir().display());
+            // Make sure nothing is read-only first.
+            let _ = util::make_tree_entries_writable(dotslash_cache.cache_dir());
+            // Then delete the contents.
             fs_ctx::remove_dir_all(dotslash_cache.cache_dir())?;
         }
 
         Subcommand::CreateUrlEntry => {
             let url = take_exactly_one_arg(args)?;
-            print_entry_for_url(&url)?
+            print_entry_for_url(&url)?;
         }
 
         Subcommand::CacheDir => {
             if args.next().is_some() {
-                return Err(format_err!("expected no arguments but received some"));
+                return Err(anyhow::format_err!(
+                    "expected no arguments but received some",
+                ));
             }
 
             let dotslash_cache = DotslashCache::new();
@@ -182,7 +188,9 @@ fn _run_subcommand(subcommand: &Subcommand, args: &mut ArgsOs) -> anyhow::Result
 
         Subcommand::Version => {
             if args.next().is_some() {
-                return Err(format_err!("expected no arguments but received some"));
+                return Err(anyhow::format_err!(
+                    "expected no arguments but received some",
+                ));
             }
 
             println!("DotSlash {}", env!("CARGO_PKG_VERSION"));
@@ -190,7 +198,9 @@ fn _run_subcommand(subcommand: &Subcommand, args: &mut ArgsOs) -> anyhow::Result
 
         Subcommand::Help => {
             if args.next().is_some() {
-                return Err(format_err!("expected no arguments but received some"));
+                return Err(anyhow::format_err!(
+                    "expected no arguments but received some",
+                ));
             }
 
             eprint!(
@@ -207,6 +217,18 @@ Supported platform: {}
 
 Your DotSlash cache is: {}
 
+dotslash also has these special experimental commands:
+  dotslash --help                   Print this message
+  dotslash --version                Print the version of dotslash
+  dotslash -- b3sum FILE            Compute blake3 hash
+  dotslash -- clean                 Clean dotslash cache
+  dotslash -- create-url-entry URL  Generate "http" provider entry
+  dotslash -- cache-dir             Print path to the cache directory
+  dotslash -- fetch DOTSLASH_FILE   Prepare for execution, but print exe path
+                                    instead of executing
+  dotslash -- parse DOTSLASH_FILE   Parse the dotslash file
+  dotslash -- sha256 FILE           Compute sha256 sum of the file
+
 Learn more at {}
 "##,
                 REQUIRED_HEADER,
@@ -219,11 +241,10 @@ Learn more at {}
         Subcommand::Sha256 => {
             let file_arg = take_exactly_one_arg(args)?;
             // TODO: read from stdin if file_arg is `-`
-            let file = fs_ctx::file_open(file_arg)?;
-            let mut reader = BufReader::new(file);
+            let mut file = fs_ctx::file_open(file_arg)?;
             let mut hasher = Sha256::new();
-            let hex_digest = std::io::copy(&mut reader, &mut hasher)
-                .map(|_size_in_bytes| format!("{:x}", hasher.finalize()))?;
+            io::copy(&mut file, &mut hasher)?;
+            let hex_digest = format!("{:x}", hasher.finalize());
             println!("{}", hex_digest);
         }
     };
@@ -233,10 +254,10 @@ Learn more at {}
 
 fn take_exactly_one_arg(args: &mut ArgsOs) -> anyhow::Result<OsString> {
     match (args.next(), args.next()) {
-        (None, _) => Err(format_err!(
+        (None, _) => Err(anyhow::format_err!(
             "expected exactly one argument but received none"
         )),
-        (Some(_), Some(_)) => Err(format_err!(
+        (Some(_), Some(_)) => Err(anyhow::format_err!(
             "expected exactly one argument but received more"
         )),
         (Some(arg), None) => Ok(arg),

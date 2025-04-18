@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use crate::util::fs_ctx;
 
+/// Move a file or directory only if destination does not exist.
+///
 /// This is conceptually equivalent to `mv --no-clobber`, though like `mv -n`,
 /// this is susceptible to a TOCTTOU issue because another process could create
 /// the file at the destination between the initial check for the destination and
@@ -27,7 +29,7 @@ use crate::util::fs_ctx;
 ///   * Linux: renameat2 with RENAME_NOREPLACE flag
 ///   * macOS: renamex_np with RENAME_EXCL flag
 pub fn mv_no_clobber<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<()> {
-    fn _mv_no_clobber(from: &Path, to: &Path) -> io::Result<()> {
+    fn mv_no_clobber_impl(from: &Path, to: &Path) -> io::Result<()> {
         // If the destination already exists, do nothing.
         if to.exists() {
             return Ok(());
@@ -48,7 +50,7 @@ pub fn mv_no_clobber<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Resu
         // then quickly clears up. This seems to happen when the system is
         // under heavy load.
         for wait in [1, 4, 9] {
-            match _mv_no_clobber(from.as_ref(), to.as_ref()) {
+            match mv_no_clobber_impl(from.as_ref(), to.as_ref()) {
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
                     thread::sleep(Duration::from_secs(wait));
                 }
@@ -57,7 +59,7 @@ pub fn mv_no_clobber<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Resu
         }
     }
 
-    _mv_no_clobber(from.as_ref(), to.as_ref())
+    mv_no_clobber_impl(from.as_ref(), to.as_ref())
 }
 
 #[cfg(test)]

@@ -10,12 +10,10 @@
 //! Wrapper around `fs2::lock_exclusive`.
 
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-use fs2::FileExt as _;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,7 +37,7 @@ impl FileLock {
         P: AsRef<Path>,
     {
         fn inner(path: &Path) -> Result<FileLock, FileLockError> {
-            let lock_file = OpenOptions::new()
+            let lock_file = File::options()
                 .read(true)
                 .write(true)
                 .create(true)
@@ -47,8 +45,7 @@ impl FileLock {
                 .open(path)
                 .map_err(|e| FileLockError::Create(path.to_path_buf(), e))?;
 
-            lock_file
-                .lock_exclusive()
+            fs2::FileExt::lock_exclusive(&lock_file)
                 .map_err(|e| FileLockError::LockExclusive(path.to_path_buf(), e))?;
 
             Ok(FileLock {
@@ -62,7 +59,7 @@ impl FileLock {
 impl Drop for FileLock {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            drop(file.unlock());
+            drop(fs2::FileExt::unlock(&file));
         }
     }
 }

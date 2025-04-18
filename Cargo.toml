@@ -2,10 +2,10 @@
 
 [package]
 name = "dotslash"
-version = "0.4.1"
+version = "0.5.2"
 authors = ["Michael Bolin <bolinfest@gmail.com>", "Andres Suarez <zertosh@gmail.com>"]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.83"
 description = "Command-line tool to facilitate fetching an executable, caching it, and then running it."
 readme = "README.md"
 homepage = "https://dotslash-cli.com"
@@ -19,34 +19,40 @@ name = "dotslash_tests_rs"
 path = "tests/dotslash_tests.rs"
 
 [dependencies]
-anyhow = "1.0.75"
-blake3 = { version = "=1.5.0", features = ["traits-preview"] }
-dirs = "2.0"
+anyhow = "1.0.95"
+blake3 = { version = "=1.5.2", features = ["mmap", "rayon", "traits-preview"] }
+digest = "0.10"
+dirs = "6.0"
 dunce = "1.0.2"
 filetime = "0.2.9"
-flate2 = { version = "1.0.26", features = ["rust_backend"], default-features = false }
+flate2 = { version = "1.0.33", features = ["rust_backend"], default-features = false }
 fs2 = "0.4"
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 serde_jsonrc = "0.1"
 sha2 = "0.10.6"
-tar = "0.4.40"
-tempfile = "3.8"
-thiserror = "1.0.49"
+tar = "0.4.44"
+tempfile = "3.15"
+thiserror = "2"
 xz2 = { version = "0.1.7", features = ["static"] }
 zip = { version = "0.6.6", features = ["deflate"], default-features = false }
 zstd = { version = "0.13", features = ["experimental", "zstdmt"] }
 
 [dev-dependencies]
 assert_matches = "1.5"
-snapbox = { version = "0.4.16", features = ["color-auto", "diff"], default-features = false }
+buck-resources = "1"
+snapbox = { version = "0.6.18", features = ["color-auto", "diff", "json", "regex"], default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = "0.25"
+nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nix = "0.25"
+nix = { version = "0.29.0", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
+
+[lints]
+clippy = { allow_attributes = { level = "warn", priority = -1 }, bool_assert_comparison = { level = "allow", priority = -1 }, cast_lossless = { level = "allow", priority = -1 }, cast_possible_truncation = { level = "allow", priority = -1 }, cast_precision_loss = { level = "allow", priority = -1 }, cast_sign_loss = { level = "allow", priority = -1 }, cognitive_complexity = { level = "allow", priority = -1 }, derive_partial_eq_without_eq = { level = "allow", priority = -1 }, doc_markdown = { level = "allow", priority = -1 }, manual_string_new = { level = "allow", priority = -1 }, missing_const_for_fn = { level = "allow", priority = -1 }, missing_errors_doc = { level = "allow", priority = -1 }, missing_panics_doc = { level = "allow", priority = -1 }, module_name_repetitions = { level = "allow", priority = -1 }, no_effect_underscore_binding = { level = "allow", priority = -1 }, nursery = { level = "warn", priority = -2 }, option_if_let_else = { level = "allow", priority = -1 }, pedantic = { level = "warn", priority = -2 }, struct_excessive_bools = { level = "allow", priority = -1 }, struct_field_names = { level = "allow", priority = -1 }, too_many_lines = { level = "allow", priority = -1 }, uninlined_format_args = { level = "allow", priority = -1 }, unreadable_literal = { level = "allow", priority = -1 }, use_self = { level = "allow", priority = -1 } }
+rust = { rust_2018_idioms = { level = "warn", priority = -2 }, unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)", "cfg(dotslash_internal)"], level = "warn", priority = 0 } }

@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::progress::display_progress;
-use crate::util::display::CommandDisplay;
-use crate::util::display::CommandStderrDisplay;
-use crate::util::http_status::HttpStatus;
+use crate::util;
+use crate::util::CommandDisplay;
+use crate::util::CommandStderrDisplay;
+use crate::util::HttpStatus;
 
 const NUM_RETRYABLE_CURL_MAX_ATTEMPTS: u8 = 3;
 const NUM_TRANSIENT_ERROR_CURL_MAX_ATTEMPTS: u64 = 3;
@@ -169,14 +169,14 @@ impl CurlError {
 }
 
 impl CurlCommand<'_> {
-    pub fn new(url: &OsStr) -> CurlCommand {
+    pub fn new(url: &OsStr) -> CurlCommand<'_> {
         CurlCommand {
             url,
             retry: NUM_TRANSIENT_ERROR_CURL_MAX_ATTEMPTS,
         }
     }
 
-    pub fn get_request(&self, target: &Path, context: &FetchContext) -> Result<(), CurlError> {
+    pub fn get_request(&self, target: &Path, context: &FetchContext<'_>) -> Result<(), CurlError> {
         // Because `target` is ultimately used with Command.args(), we should make
         // it possible to use a non-utf8 value, as unlikely as it is, in practice.
         let output_arg = target.to_str().unwrap();
@@ -189,7 +189,7 @@ impl CurlCommand<'_> {
         // done it is compared to content_length.
         let handler = if context.show_progress {
             eprintln!("Downloading {}...", context.artifact_name);
-            Some(display_progress(context.content_length, target))
+            Some(util::display_progress(context.content_length, target))
         } else {
             None
         };
@@ -211,6 +211,7 @@ impl CurlCommand<'_> {
         Ok(())
     }
 
+    #[expect(clippy::unused_self)]
     fn make_request(&self, curl_command: &mut Command) -> Result<Vec<u8>, CurlError> {
         let mut retries = 1..=NUM_RETRYABLE_CURL_MAX_ATTEMPTS;
         loop {
@@ -248,7 +249,7 @@ impl CurlCommand<'_> {
         }
     }
 
-    fn curl_command(&self, url: &OsStr, request_type: &CurlRequestType) -> Command {
+    fn curl_command(&self, url: &OsStr, request_type: &CurlRequestType<'_>) -> Command {
         let mut curl_command = Command::new("curl");
 
         // https://cygwin.com/cygwin-ug-net/using-cygwinenv.html

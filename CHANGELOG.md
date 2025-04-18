@@ -1,8 +1,32 @@
 # Changelog
 
-## Next (TBD)
+## v0.5.2 (2025-02-05)
 
-- Add your feature here!
+- Include experimental commands in --help:
+  <https://github.com/facebook/dotslash/pull/44>
+
+## v0.5.1 (2025-02-03)
+
+- Improved the error message for GitHub provider auth failures:
+  <https://github.com/facebook/dotslash/pull/43>
+
+## v0.5.0 (2025-01-13)
+
+- Added `arg0` artifact entry config field:
+  <https://github.com/facebook/dotslash/pull/37>
+- MSRV 1.83.
+
+## v0.4.3 (2024-10-13)
+
+- Fix MUSL aarch64 linux releases:
+  <https://github.com/facebook/dotslash/pull/35>
+  - v0.4.2 was never actually published because of this.
+
+## v0.4.2 (2024-10-11)
+
+- Added MUSL Linux releases: <https://github.com/facebook/dotslash/pull/34>
+- Many dependency updates, but key among them is
+  [`tar` 0.4.40 to 0.4.42](https://github.com/facebook/dotslash/commit/4ee240e788eaaa7ddad15a835819fb624d1f11f6).
 
 ## v0.4.1 (2024-04-10)
 

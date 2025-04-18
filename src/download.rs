@@ -7,38 +7,29 @@
  * of this source tree.
  */
 
-use std::fs::set_permissions;
+use std::borrow::Cow;
 use std::fs::File;
+use std::io;
 use std::io::BufReader;
-use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
 
-use anyhow::format_err;
 use anyhow::Context as _;
+use digest::Digest as _;
 use serde_jsonrc::value::Value;
-use sha2::Digest as _;
 use sha2::Sha256;
-use tar::Archive;
-use xz2::read::XzDecoder;
-use zstd::stream::read::Decoder;
 
 use crate::artifact_location::ArtifactLocation;
 use crate::config::ArtifactEntry;
 use crate::config::HashAlgorithm;
-use crate::decompress;
 use crate::digest::Digest;
-use crate::fetch_method::ArchiveFormat;
 use crate::fetch_method::ArtifactFormat;
-use crate::fetch_method::DecompressStep;
 use crate::provider::ProviderFactory;
-#[cfg(unix)]
-use crate::util::chmodx::chmodx;
-use crate::util::file_lock::FileLock;
-use crate::util::file_lock::FileLockError;
+use crate::util;
+use crate::util::FileLock;
+use crate::util::FileLockError;
 use crate::util::fs_ctx;
-use crate::util::make_tree_read_only::make_tree_entries_read_only;
-use crate::util::mv_no_clobber::mv_no_clobber;
+use crate::util::unarchive;
 
 pub const DEFAULT_PROVDIER_TYPE: &str = "http";
 
@@ -92,18 +83,18 @@ pub fn download_artifact<P: ProviderFactory>(
             &file_lock,
             artifact_entry,
         ) {
-            Ok(_) => match verify_artifact(&fetch_destination, artifact_entry) {
-                Ok(_) => {
+            Ok(()) => match verify_artifact(&fetch_destination, artifact_entry) {
+                Ok(()) => {
                     unpack_verified_artifact(
                         &fetch_destination,
                         temp_dir_to_mv.path(),
-                        &artifact_entry.format,
+                        artifact_entry.format,
                         artifact_entry.path.as_str(),
                     )?;
                     if artifact_entry.readonly {
-                        make_tree_entries_read_only(temp_dir_to_mv.path())?;
+                        util::make_tree_entries_read_only(temp_dir_to_mv.path())?;
                     }
-                    mv_no_clobber(&temp_dir_to_mv, &artifact_location.artifact_directory)?;
+                    util::mv_no_clobber(&temp_dir_to_mv, &artifact_location.artifact_directory)?;
                     if artifact_entry.readonly {
                         // Note the following appears to work on Linux but not
                         // macOS:
@@ -124,7 +115,7 @@ pub fn download_artifact<P: ProviderFactory>(
                             fs_ctx::symlink_metadata(&artifact_location.artifact_directory)?;
                         let mut perms = metadata.permissions();
                         perms.set_readonly(true);
-                        set_permissions(&artifact_location.artifact_directory, perms)?;
+                        fs_ctx::set_permissions(&artifact_location.artifact_directory, perms)?;
                     }
                     return Ok(());
                 }
@@ -134,7 +125,7 @@ pub fn download_artifact<P: ProviderFactory>(
         }
     }
 
-    Err(format_err!(
+    Err(anyhow::format_err!(
         "no providers succeeded. warnings:\n{}",
         warnings.join("\n")
     ))
@@ -164,14 +155,14 @@ fn verify_artifact(
     let (size_in_bytes, digest) = match artifact_entry.hash {
         HashAlgorithm::Blake3 => {
             let mut hasher = blake3::Hasher::new();
-            std::io::copy(&mut file, &mut hasher).map(|size_in_bytes| {
+            io::copy(&mut file, &mut hasher).map(|size_in_bytes| {
                 let digest = format!("{:x}", hasher.finalize());
                 (size_in_bytes, digest)
             })
         }
         HashAlgorithm::Sha256 => {
             let mut hasher = Sha256::new();
-            std::io::copy(&mut file, &mut hasher).map(|size_in_bytes| {
+            io::copy(&mut file, &mut hasher).map(|size_in_bytes| {
                 let digest = format!("{:x}", hasher.finalize());
                 (size_in_bytes, digest)
             })
@@ -186,7 +177,7 @@ fn verify_artifact(
     drop(file);
 
     if size_in_bytes != artifact_entry.size {
-        return Err(format_err!(
+        return Err(anyhow::format_err!(
             "fetched artifact `{}` has incorrect size: {} bytes vs expected {} bytes",
             artifact_temp_location.display(),
             size_in_bytes,
@@ -196,7 +187,7 @@ fn verify_artifact(
 
     let digest = Digest::try_from(digest)?;
     if digest != artifact_entry.digest {
-        return Err(format_err!(
+        return Err(anyhow::format_err!(
             "fetched artifact `{}` has incorrect digest: {} vs expected {}",
             artifact_temp_location.display(),
             digest,
@@ -212,81 +203,32 @@ fn verify_artifact(
 fn unpack_verified_artifact(
     fetched_artifact: &Path,
     temp_dir_to_mv: &Path,
-    format: &ArtifactFormat,
+    format: ArtifactFormat,
     artifact_entry_path: &str,
 ) -> anyhow::Result<()> {
-    match &format.extraction_policy() {
-        (decompression, Some(ArchiveFormat::Zip)) => {
-            if let Some(d) = decompression {
-                unreachable!("zip's extraction_policy should never return `(Some(_), _)`; {d:?}");
-            }
-            let zip_file = fs_ctx::file_open(fetched_artifact)?;
-            let reader = BufReader::new(zip_file);
-            let mut archive = zip::ZipArchive::new(reader)?;
-            archive.extract(temp_dir_to_mv)?;
+    // Container artifacts get unarchived into directories.
+    // Non-container artifacts get written directly to a file.
+    let final_artifact_path = if format.is_container() {
+        Cow::Borrowed(temp_dir_to_mv)
+    } else {
+        let final_artifact_path = temp_dir_to_mv.join(artifact_entry_path);
+        let parent = final_artifact_path.parent().unwrap();
+        if parent != Path::new("") {
+            fs_ctx::create_dir_all(parent)?;
         }
-        (None, Some(ArchiveFormat::Tar)) => {
-            decompress::untar(fetched_artifact, temp_dir_to_mv, /* is_tar_gz */ false)?;
-        }
-        (Some(DecompressStep::Gzip), Some(ArchiveFormat::Tar)) => {
-            decompress::untar(fetched_artifact, temp_dir_to_mv, /* is_tar_gz */ true)?;
-        }
-        (Some(DecompressStep::Zstd), Some(ArchiveFormat::Tar)) => {
-            let zst_file = fs_ctx::file_open(fetched_artifact)?;
-            let reader = BufReader::new(zst_file);
-            let decoder = Decoder::new(reader)?;
-            let archive = Archive::new(decoder);
-            decompress::unpack(archive, temp_dir_to_mv)?;
-        }
-        (Some(DecompressStep::Xz), Some(ArchiveFormat::Tar)) => {
-            let xz_file = fs_ctx::file_open(fetched_artifact)?;
-            let reader = BufReader::new(xz_file);
-            let decoder = XzDecoder::new(reader);
-            let archive = Archive::new(decoder);
-            decompress::unpack(archive, temp_dir_to_mv)?;
-        }
-        (decompression, None) => {
-            let final_artifact_path = temp_dir_to_mv.join(artifact_entry_path);
-            let parent = final_artifact_path.parent().unwrap();
-            if parent != Path::new("") {
-                fs_ctx::create_dir_all(parent)?;
-            }
+        Cow::Owned(final_artifact_path)
+    };
 
-            match decompression {
-                Some(DecompressStep::Gzip) => {
-                    // fetched_artifact contains the .gz
-                    let gz_file = fs_ctx::file_open(fetched_artifact)?;
-                    let mut decoder = flate2::read::GzDecoder::new(gz_file);
-                    let output_file = fs_ctx::file_create(&final_artifact_path)?;
-                    let mut writer = BufWriter::new(output_file);
-                    std::io::copy(&mut decoder, &mut writer)?;
-                }
-                Some(DecompressStep::Xz) => {
-                    // fetched_artifact contains the .xz
-                    let xz_file = fs_ctx::file_open(fetched_artifact)?;
-                    let mut decoder = XzDecoder::new(xz_file);
-                    let output_file = fs_ctx::file_create(&final_artifact_path)?;
-                    let mut writer = BufWriter::new(output_file);
-                    std::io::copy(&mut decoder, &mut writer)?;
-                }
-                Some(DecompressStep::Zstd) => {
-                    // fetched_artifact contains the .zst
-                    let zst_file = fs_ctx::file_open(fetched_artifact)?;
-                    let reader = BufReader::new(zst_file);
-                    let mut decoder = Decoder::new(reader)?;
-                    let output_file = fs_ctx::file_create(&final_artifact_path)?;
-                    let mut writer = BufWriter::new(output_file);
-                    std::io::copy(&mut decoder, &mut writer)?;
-                }
-                None => {
-                    fs_ctx::rename(fetched_artifact, &final_artifact_path)?;
-                }
-            }
+    if let Some(archive_type) = format.as_archive_type() {
+        let reader = BufReader::new(fs_ctx::file_open(fetched_artifact)?);
+        unarchive::unarchive(reader, &final_artifact_path, archive_type)?;
+    } else {
+        fs_ctx::rename(fetched_artifact, &final_artifact_path)?;
+    }
 
-            // Change the file permissions, so can't overwrite file by accident.
-            #[cfg(unix)]
-            chmodx(final_artifact_path).context("failed to make path executable")?;
-        }
+    if !format.is_container() {
+        #[cfg(unix)]
+        util::chmodx(final_artifact_path).context("failed to make path executable")?;
     };
 
     Ok(())

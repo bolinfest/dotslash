@@ -13,7 +13,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(unix)]
-use nix::unistd::getuid;
+use nix::unistd;
+
+#[cfg(unix)]
+use crate::util;
 
 pub const DOTSLASH_CACHE_ENV: &str = "DOTSLASH_CACHE";
 
@@ -76,7 +79,6 @@ fn get_dotslash_cache() -> PathBuf {
 
     // `dirs` returns the preferred cache directory for the user and the
     // platform based on these rules: https://docs.rs/dirs/*/dirs/fn.cache_dir.html
-    #[cfg_attr(windows, allow(clippy::let_and_return))]
     let cache_dir = match dirs::cache_dir() {
         Some(cache_dir) => cache_dir.join("dotslash"),
         None => panic!("could not find DotSlash root - specify $DOTSLASH_CACHE"),
@@ -100,7 +102,7 @@ fn get_dotslash_cache() -> PathBuf {
     //
     // i.e., `$USER` is reliable in the presence of sudo but `$HOME` is not.
     #[cfg(unix)]
-    if !is_safe_to_own(&cache_dir) {
+    if !util::is_path_safe_to_own(&cache_dir) {
         let temp_dir = env::temp_dir();
         // e.g. $TEMP/dotslash-UID
         return named_cache_dir_at(temp_dir);
@@ -109,13 +111,13 @@ fn get_dotslash_cache() -> PathBuf {
     cache_dir
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(windows, expect(dead_code))]
 fn named_cache_dir_at<P: Into<PathBuf>>(dir: P) -> PathBuf {
     let mut name = OsString::from("dotslash-");
 
     // e.g. dotslash-UID
     #[cfg(unix)]
-    name.push(getuid().as_raw().to_string());
+    name.push(unistd::getuid().as_raw().to_string());
 
     // e.g. dotslash-$USERNAME
     #[cfg(windows)]
@@ -126,44 +128,4 @@ fn named_cache_dir_at<P: Into<PathBuf>>(dir: P) -> PathBuf {
     dir.push(name);
 
     dir
-}
-
-// A path is considered "safe to own" if:
-// (1) it exists and we own it, or,
-// (2) it doesn't exist and we own the nearest parent that does exist.
-#[cfg(unix)]
-fn is_safe_to_own(path: &Path) -> bool {
-    use std::io;
-    use std::os::unix::fs::MetadataExt;
-
-    for ancestor in path.ancestors() {
-        // Use `symlink_metadata` and not `metadata` because we're not
-        // interested in following symlinks. If the path is a broken
-        // symlink we want to still check the owner on that, instead of
-        // treating it like a "NotFound".
-        match ancestor.symlink_metadata() {
-            Ok(meta) => {
-                return getuid().as_raw() == meta.uid();
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                continue;
-            }
-            // We tried to check `/a/b/c` but `/a/b` exists and it is not a
-            // directory (could be a file). For the purposes of ownership,
-            // we'll treat this case as if the path does not exist so we can
-            // keep checking.
-            Err(ref e) if e.raw_os_error() == Some(nix::errno::Errno::ENOTDIR as i32) => {
-                continue;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                return false;
-            }
-            // Not sure how this can happen.
-            Err(_) => {
-                return false;
-            }
-        }
-    }
-
-    false
 }

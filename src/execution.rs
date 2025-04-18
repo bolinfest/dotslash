@@ -11,23 +11,24 @@ use std::env::ArgsOs;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 use std::process::ExitCode;
 
-use anyhow::format_err;
 use anyhow::Context as _;
 
+#[cfg(unix)]
+use crate::config::Arg0;
 use crate::dotslash_cache::DotslashCache;
 use crate::download::download_artifact;
 use crate::locate::locate_artifact;
-#[cfg(unix)]
-use crate::locate::update_artifact_mtime;
 use crate::provider::ProviderFactory;
-use crate::subcommand::run_subcommand;
 use crate::subcommand::Subcommand;
 use crate::subcommand::SubcommandError;
-use crate::util::execv;
+use crate::subcommand::run_subcommand;
+use crate::util;
 
 pub fn run<P: ProviderFactory>(mut args: ArgsOs, provider_factory: &P) -> ExitCode {
     // If there is an argument, check whether it is a valid DotSlash file.
@@ -36,7 +37,7 @@ pub fn run<P: ProviderFactory>(mut args: ArgsOs, provider_factory: &P) -> ExitCo
         match run_dotslash_file(&file_arg, args, provider_factory) {
             Ok(()) => return ExitCode::SUCCESS,
             Err(err) if err.is::<SubcommandError>() => err,
-            Err(err) => err.context(format_err!(
+            Err(err) => err.context(format!(
                 "problem with `{}`",
                 dunce::canonicalize(&file_arg)
                     .unwrap_or_else(|_| dunce::simplified(file_arg.as_ref()).to_owned())
@@ -44,7 +45,7 @@ pub fn run<P: ProviderFactory>(mut args: ArgsOs, provider_factory: &P) -> ExitCo
             )),
         }
     } else {
-        format_err!("must specify the path to a DotSlash file")
+        anyhow::format_err!("must specify the path to a DotSlash file")
     };
 
     eprintln!("dotslash error: {}", err);
@@ -65,9 +66,9 @@ fn run_dotslash_file<P: ProviderFactory>(
         Err(err) => {
             if err.kind() == io::ErrorKind::NotFound {
                 match try_parse_file_arg_as_flag(file_arg, &mut args) {
-                    DotSlashFlagResult::Success => return Ok(()),
-                    DotSlashFlagResult::Failure(err) => return Err(err.into()),
-                    DotSlashFlagResult::NoMatch => {}
+                    DotslashFlagResult::Success => return Ok(()),
+                    DotslashFlagResult::Failure(err) => return Err(err.into()),
+                    DotslashFlagResult::NoMatch => {}
                 }
             }
             return Err(err).context("failed to read DotSlash file");
@@ -81,11 +82,18 @@ fn run_dotslash_file<P: ProviderFactory>(
     command.args(args);
 
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::arg0(&mut command, file_arg);
+    match artifact_location.arg0 {
+        Arg0::DotslashFile => {
+            command.arg0(file_arg);
+        }
+        Arg0::UnderlyingExecutable => {
+            // This is what the OS already does...
+        }
+    }
 
-    let error = execv::execv(&mut command);
+    let error = util::execv(&mut command);
 
-    if !is_file_not_found_error(&error) {
+    if !util::is_not_found_error(&error) {
         return Err(error).context(format!(
             "failed to execute `{}`",
             artifact_location.executable.display()
@@ -104,15 +112,16 @@ fn run_dotslash_file<P: ProviderFactory>(
 
     // Since we just unpacked the executable for the first time, we can
     // afford to pay the macOS cost mentioned above.
-    #[cfg(unix)]
-    update_artifact_mtime(&artifact_location.executable);
+    if cfg!(unix) {
+        let _ = util::update_mtime(&artifact_location.executable);
+    }
 
     // Now that we have fetched the artifact, try to execv again.
-    let execv_error = execv::execv(&mut command);
+    let execv_error = util::execv(&mut command);
 
     let executable = Path::new(command.get_program());
 
-    let err_context = if is_file_not_found_error(&execv_error) {
+    let err_context = if util::is_not_found_error(&execv_error) {
         if executable.exists() {
             // On Unix, if an interpreter in a shebang does not exist, the
             // exec returns ENOENT. It is unclear under what other
@@ -132,39 +141,10 @@ fn run_dotslash_file<P: ProviderFactory>(
         format!("failed to execute `{}`", executable.display())
     };
 
-    Err(format_err!(execv_error).context(err_context))
+    Err(execv_error).context(err_context)
 }
 
-fn is_file_not_found_error(error_from_execv: &io::Error) -> bool {
-    // If execv fails with ENOENT, that means we need to fetch the artifact.
-    // This is the most likely error returned by execv.
-    if error_from_execv.kind() == io::ErrorKind::NotFound {
-        return true;
-    }
-
-    // On Windows, the following is already covered by the NotFound check above.
-    #[cfg(unix)]
-    if let Some(raw_os_error) = error_from_execv.raw_os_error() {
-        // Note that this can happen if the program passed to execv is:
-        //
-        // ~/.cache/dotslash/obj/ha/xx/abc/extract/my_tool
-        //
-        // but the following is a regular file:
-        //
-        // ~/.cache/dotslash/obj/ha/xx/abc/extract
-        //
-        // This could happen if a previous release of DotSlash wrote this entry in the cache in
-        // a different way that is not consistent with the current directory structure. We
-        // should attempt to fetch the artifact again in this case.
-        if raw_os_error == nix::errno::Errno::ENOTDIR as i32 {
-            return true;
-        }
-    }
-
-    false
-}
-
-enum DotSlashFlagResult {
+enum DotslashFlagResult {
     /// Arguments were well-formed and the flag was handled successfully.
     Success,
     /// Arguments were ill-formed or there was an error processing the subcommand.
@@ -176,7 +156,7 @@ enum DotSlashFlagResult {
 /// Called when opening file_arg returns ENOENT in [run_dotslash_file()]. In general, we do not
 /// attempt to support sophisticated arg parsing in DotSlash itself because normally arguments
 /// should be passed transparently to the underlying executable.
-fn try_parse_file_arg_as_flag(file_arg: &OsStr, args: &mut ArgsOs) -> DotSlashFlagResult {
+fn try_parse_file_arg_as_flag(file_arg: &OsStr, args: &mut ArgsOs) -> DotslashFlagResult {
     let subcommand = match file_arg.as_encoded_bytes() {
         b"--help" => Subcommand::Help,
         b"--version" => Subcommand::Version,
@@ -184,18 +164,18 @@ fn try_parse_file_arg_as_flag(file_arg: &OsStr, args: &mut ArgsOs) -> DotSlashFl
             if let Some(subcommand_arg) = args.next() {
                 match subcommand_arg.to_string_lossy().parse::<Subcommand>() {
                     Ok(subcommand) => subcommand,
-                    Err(err) => return DotSlashFlagResult::Failure(err),
+                    Err(err) => return DotslashFlagResult::Failure(err),
                 }
             } else {
-                return DotSlashFlagResult::Failure(SubcommandError::MissingCommand);
+                return DotslashFlagResult::Failure(SubcommandError::MissingCommand);
             }
         }
-        _ => return DotSlashFlagResult::NoMatch,
+        _ => return DotslashFlagResult::NoMatch,
     };
 
     if let Err(err) = run_subcommand(subcommand, args) {
-        DotSlashFlagResult::Failure(err)
+        DotslashFlagResult::Failure(err)
     } else {
-        DotSlashFlagResult::Success
+        DotslashFlagResult::Success
     }
 }
